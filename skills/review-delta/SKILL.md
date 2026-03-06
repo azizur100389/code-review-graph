@@ -1,6 +1,7 @@
 ---
 name: review-delta
 description: Review only changes since last commit using impact analysis. Token-efficient delta review with automatic blast-radius detection.
+argument-hint: "[file or function name]"
 ---
 
 # Review Delta

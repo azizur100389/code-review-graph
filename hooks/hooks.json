@@ -1,4 +1,5 @@
 {
+  "_comment": "PostEdit and PostGit are custom Claude Code hook events (confirmed working as of v1.6.4).",
   "hooks": {
     "SessionStart": [
       {
