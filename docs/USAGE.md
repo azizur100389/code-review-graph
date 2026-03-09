@@ -1,21 +1,16 @@
 # Code Review Graph — User Guide
 
-**Version:** v1.6.4 (Mar 6, 2026)
+**Version:** v1.7.0 (Mar 9, 2026)
 
-## Quick Installation (30 seconds)
+## Installation
 
 ```bash
 pip install code-review-graph
-code-review-graph init    # creates .mcp.json automatically
-code-review-graph build   # parse your codebase
+code-review-graph install    # creates .mcp.json for Claude Code
+code-review-graph build      # parse your codebase
 ```
 
 Restart Claude Code to pick up the MCP server.
-
-Then build the graph once:
-```
-/code-review-graph:build-graph
-```
 
 ## Core Workflow
 

@@ -1,6 +1,12 @@
 # Features
 
-## v1.6.4 (Current)
+## v1.7.0 (Current)
+- **`install` command**: New primary entry point for setup (`code-review-graph install`). `init` remains as an alias.
+- **`--dry-run` flag**: Preview what `install`/`init` would write without modifying files.
+- **PyPI auto-publish**: GitHub releases now automatically publish to PyPI.
+- **README rewrite**: Professional documentation with real benchmark data from httpx, FastAPI, and Next.js.
+
+## v1.6.4
 - **Portable MCP config**: `init` now generates `uvx`-based `.mcp.json` — no absolute paths, works on any machine with `uv` installed
 - **Removed symlink workaround**: The `_safe_path` helper for spaces-in-paths is no longer needed with `uvx`
 

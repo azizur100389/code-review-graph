@@ -81,11 +81,16 @@ section_name: str    # usage, review-delta, review-pr, commands, legal, watch, e
 ## CLI Commands
 
 ```bash
+# Register MCP server with Claude Code
+code-review-graph install           # also available as: code-review-graph init
+code-review-graph install --dry-run # preview without writing files
+
 # Full build
-code-review-graph build --full
+code-review-graph build
 
 # Incremental update
 code-review-graph update
+code-review-graph update --base origin/main  # custom base ref
 
 # Check status
 code-review-graph status
@@ -93,13 +98,7 @@ code-review-graph status
 # Watch mode
 code-review-graph watch
 
-# Custom base ref
-code-review-graph update --base origin/main
-
-# Set up Claude Code integration
-code-review-graph init
-
-# Generate graph visualization
+# Generate graph visualisation
 code-review-graph visualize
 
 # Start MCP server
