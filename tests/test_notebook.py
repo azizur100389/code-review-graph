@@ -260,3 +260,118 @@ class TestDatabricksPyNotebook:
         assert funcs[0].name == "hello"
         file_node = [n for n in nodes if n.kind == "File"][0]
         assert "notebook_format" not in file_node.extra
+
+
+class TestRKernelNotebook:
+    def setup_method(self):
+        self.parser = CodeParser()
+        nb = {
+            "cells": [
+                {
+                    "cell_type": "code",
+                    "source": [
+                        "library(dplyr)\n",
+                    ],
+                    "outputs": [],
+                },
+                {
+                    "cell_type": "code",
+                    "source": [
+                        "clean_data <- function(df) {\n",
+                        "  df %>% filter(!is.na(value))\n",
+                        "}\n",
+                    ],
+                    "outputs": [],
+                },
+            ],
+            "metadata": {"kernelspec": {"language": "r"}},
+            "nbformat": 4,
+        }
+        source = json.dumps(nb).encode("utf-8")
+        self.nodes, self.edges = self.parser.parse_bytes(
+            Path("analysis.ipynb"), source,
+        )
+
+    def test_r_kernel_not_skipped(self):
+        """R-kernel notebooks should now be parsed, not skipped."""
+        assert len(self.nodes) >= 1
+        file_node = [n for n in self.nodes if n.kind == "File"][0]
+        assert file_node.language == "r"
+
+    def test_r_kernel_detects_functions(self):
+        funcs = [n for n in self.nodes if n.kind == "Function"]
+        names = {f.name for f in funcs}
+        assert "clean_data" in names
+
+    def test_r_kernel_detects_imports(self):
+        imports = [e for e in self.edges if e.kind == "IMPORTS_FROM"]
+        targets = {e.target for e in imports}
+        assert "dplyr" in targets
+
+
+class TestNotebookEdgeCases:
+    def setup_method(self):
+        self.parser = CodeParser()
+
+    def test_databricks_header_not_on_line_1(self):
+        """Header on line 2 should be treated as regular Python."""
+        source = b"# comment\n# Databricks notebook source\ndef foo(): pass\n"
+        nodes, edges = self.parser.parse_bytes(Path("not_db.py"), source)
+        file_node = [n for n in nodes if n.kind == "File"][0]
+        assert "notebook_format" not in file_node.extra
+
+    def test_databricks_py_no_command_delimiters(self):
+        """Header present but no COMMAND delimiters — single Python cell."""
+        source = b"# Databricks notebook source\ndef foo():\n    return 1\n"
+        nodes, edges = self.parser.parse_bytes(Path("single_cell.py"), source)
+        funcs = [n for n in nodes if n.kind == "Function"]
+        assert len(funcs) == 1
+        assert funcs[0].name == "foo"
+
+    def test_empty_databricks_cells(self):
+        """Cells with only magic/shell lines should be skipped."""
+        nb = {
+            "cells": [
+                {"cell_type": "code", "source": ["%pip install foo\n"], "outputs": []},
+                {"cell_type": "code", "source": ["!ls\n"], "outputs": []},
+                {"cell_type": "code", "source": ["def real(): pass\n"], "outputs": []},
+            ],
+            "metadata": {"kernelspec": {"language": "python"}},
+            "nbformat": 4,
+        }
+        source = json.dumps(nb).encode("utf-8")
+        nodes, edges = self.parser.parse_bytes(Path("sparse.ipynb"), source)
+        funcs = [n for n in nodes if n.kind == "Function"]
+        assert len(funcs) == 1
+        assert funcs[0].name == "real"
+
+    def test_sql_cell_no_tables(self):
+        """SQL cell with no table refs should produce no edges."""
+        nb = {
+            "cells": [
+                {"cell_type": "code", "source": ["%sql\n", "SELECT 1 + 1\n"], "outputs": []},
+            ],
+            "metadata": {"kernelspec": {"language": "python"}},
+            "nbformat": 4,
+        }
+        source = json.dumps(nb).encode("utf-8")
+        nodes, edges = self.parser.parse_bytes(Path("no_tables.ipynb"), source)
+        imports = [e for e in edges if e.kind == "IMPORTS_FROM"]
+        assert imports == []
+
+    def test_conflicting_kernel_metadata(self):
+        """kernelspec.language takes precedence over language_info.name."""
+        nb = {
+            "cells": [
+                {"cell_type": "code", "source": ["def foo(): pass\n"], "outputs": []},
+            ],
+            "metadata": {
+                "kernelspec": {"language": "python"},
+                "language_info": {"name": "r"},
+            },
+            "nbformat": 4,
+        }
+        source = json.dumps(nb).encode("utf-8")
+        nodes, edges = self.parser.parse_bytes(Path("conflict.ipynb"), source)
+        file_node = [n for n in nodes if n.kind == "File"][0]
+        assert file_node.language == "python"
