@@ -241,6 +241,64 @@ class TestIncrementalUpdate:
             store.close()
 
 
+    def test_incremental_deleted_and_modified_files(self, tmp_path):
+        """Regression test for #135: incremental update with a mix of deleted
+        and modified files must not raise 'cannot start a transaction within
+        a transaction'."""
+        db_path = tmp_path / "test.db"
+        store = GraphStore(db_path)
+        try:
+            # Create two files and build them into the graph
+            a = tmp_path / "a.py"
+            b = tmp_path / "b.py"
+            a.write_text("def fa():\n    pass\n")
+            b.write_text("def fb():\n    pass\n")
+            incremental_update(tmp_path, store, changed_files=["a.py", "b.py"])
+            assert len(store.get_nodes_by_file(str(a))) > 0
+            assert len(store.get_nodes_by_file(str(b))) > 0
+
+            # Delete a.py, modify b.py, then do incremental update
+            a.unlink()
+            b.write_text("def fb_v2():\n    return 42\n")
+            # This must not raise sqlite3.OperationalError
+            incremental_update(
+                tmp_path, store, changed_files=["a.py", "b.py"]
+            )
+            # a.py removed, b.py updated
+            assert store.get_nodes_by_file(str(a)) == []
+            assert len(store.get_nodes_by_file(str(b))) > 0
+        finally:
+            store.close()
+
+    def test_full_build_stale_files_then_parse(self, tmp_path):
+        """Regression test for #135: full_build removing stale files then
+        parsing remaining files must not raise transaction errors."""
+        (tmp_path / ".git").mkdir()
+        db_path = tmp_path / "test.db"
+        store = GraphStore(db_path)
+        try:
+            # Pre-populate with a file that will become stale
+            stale = tmp_path / "stale.py"
+            stale.write_text("x = 1\n")
+            mock_target = "code_review_graph.incremental.get_all_tracked_files"
+            with patch(mock_target, return_value=["stale.py"]):
+                full_build(tmp_path, store)
+            assert len(store.get_nodes_by_file(str(stale))) > 0
+
+            # Remove stale.py, add fresh.py
+            stale.unlink()
+            fresh = tmp_path / "fresh.py"
+            fresh.write_text("def new_func():\n    pass\n")
+            with patch(mock_target, return_value=["fresh.py"]):
+                # This must not raise sqlite3.OperationalError
+                result = full_build(tmp_path, store)
+            assert result["files_parsed"] == 1
+            assert store.get_nodes_by_file(str(stale)) == []
+            assert len(store.get_nodes_by_file(str(fresh))) > 0
+        finally:
+            store.close()
+
+
 class TestParallelParsing:
     def test_parse_single_file(self, tmp_path):
         py_file = tmp_path / "single.py"

@@ -236,6 +236,13 @@ class GraphStore:
         self, file_path: str, nodes: list[NodeInfo], edges: list[EdgeInfo], fhash: str = ""
     ) -> None:
         """Atomically replace all data for a file."""
+        # Flush any implicit transaction started by prior DML (e.g.
+        # remove_file_data DELETEs during incremental_update/full_build).
+        # Python sqlite3 auto-begins a DEFERRED transaction on the first
+        # DML; BEGIN IMMEDIATE inside an active transaction raises
+        # OperationalError.  See GitHub issue #135.
+        if self._conn.in_transaction:
+            self._conn.commit()
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             self.remove_file_data(file_path)

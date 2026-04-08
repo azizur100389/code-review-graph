@@ -242,3 +242,29 @@ class TestImpactRadiusSql:
         assert result["changed_nodes"] == []
         assert result["impacted_nodes"] == []
         assert result["total_impacted"] == 0
+
+    def test_store_after_remove_no_transaction_error(self):
+        """Regression test for #135: remove_file_data then store_file_nodes_edges
+        must not raise 'cannot start a transaction within a transaction'."""
+        file_a = "/proj/a.py"
+        file_b = "/proj/b.py"
+        node_a = NodeInfo(
+            kind="File", name=file_a, file_path=file_a,
+            line_start=1, line_end=10, language="python",
+        )
+        node_b = NodeInfo(
+            kind="File", name=file_b, file_path=file_b,
+            line_start=1, line_end=10, language="python",
+        )
+        # Populate both files
+        self.store.store_file_nodes_edges(file_a, [node_a], [], "aaa")
+        self.store.store_file_nodes_edges(file_b, [node_b], [], "bbb")
+
+        # Simulate incremental_update: delete file_a, then re-store file_b
+        self.store.remove_file_data(file_a)
+        # This must not raise sqlite3.OperationalError
+        self.store.store_file_nodes_edges(file_b, [node_b], [], "ccc")
+
+        # Verify: file_a gone, file_b present
+        assert self.store.get_nodes_by_file(file_a) == []
+        assert len(self.store.get_nodes_by_file(file_b)) == 1
