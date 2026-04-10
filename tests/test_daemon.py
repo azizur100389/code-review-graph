@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -369,7 +370,7 @@ class TestWatchDaemon:
             daemon.stop()
 
     def test_reconcile_add(self, daemon_env):
-        """New repo in config spawns a new child process."""
+        """New repo in config is registered, built if needed, and spawned."""
         daemon = daemon_env["daemon"]
         config = daemon_env["config"]
         daemon._state_path = daemon_env["tmp_path"] / "daemon-state.json"
@@ -381,13 +382,69 @@ class TestWatchDaemon:
         daemon._current_repos = {"alpha": config.repos[0]}
         daemon._children = {"alpha": mock_alpha}
 
-        with patch("code_review_graph.daemon.subprocess.Popen") as mock_popen:
+        # Remove graph.db for beta so _initial_build is triggered
+        beta_db = Path(config.repos[1].path) / ".code-review-graph" / "graph.db"
+        beta_db.unlink()
+
+        with (
+            patch("code_review_graph.daemon.subprocess.Popen") as mock_popen,
+            patch("code_review_graph.daemon.subprocess.run") as mock_run,
+            patch("code_review_graph.registry.Registry") as mock_registry_cls,
+        ):
             mock_new = MagicMock()
             mock_new.pid = 999
             mock_popen.return_value = mock_new
 
+            mock_run.return_value = MagicMock(returncode=0)
+            mock_registry = mock_registry_cls.return_value
+
             # Reconcile with full config (alpha + beta)
             daemon.reconcile(config)
+
+            # beta should have been registered in the registry
+            mock_registry.register.assert_called_once_with(config.repos[1].path, alias="beta")
+
+            # beta should have been built (no graph.db)
+            assert mock_run.call_count == 1
+
+            # beta should have been spawned
+            assert mock_popen.call_count == 1
+            assert "beta" in daemon._children
+
+    def test_reconcile_add_skips_build_when_db_exists(self, daemon_env):
+        """New repo with existing graph.db is registered and spawned without building."""
+        daemon = daemon_env["daemon"]
+        config = daemon_env["config"]
+        daemon._state_path = daemon_env["tmp_path"] / "daemon-state.json"
+
+        # Simulate initial state with only alpha
+        mock_alpha = MagicMock()
+        mock_alpha.pid = 100
+        mock_alpha.poll.return_value = None
+        daemon._current_repos = {"alpha": config.repos[0]}
+        daemon._children = {"alpha": mock_alpha}
+
+        # beta already has graph.db (from fixture) — build should be skipped
+
+        with (
+            patch("code_review_graph.daemon.subprocess.Popen") as mock_popen,
+            patch("code_review_graph.daemon.subprocess.run") as mock_run,
+            patch("code_review_graph.registry.Registry") as mock_registry_cls,
+        ):
+            mock_new = MagicMock()
+            mock_new.pid = 999
+            mock_popen.return_value = mock_new
+
+            mock_registry = mock_registry_cls.return_value
+
+            # Reconcile with full config (alpha + beta)
+            daemon.reconcile(config)
+
+            # beta should have been registered
+            mock_registry.register.assert_called_once_with(config.repos[1].path, alias="beta")
+
+            # No build should have been triggered (graph.db exists)
+            mock_run.assert_not_called()
 
             # beta should have been spawned
             assert mock_popen.call_count == 1
@@ -444,7 +501,7 @@ class TestWatchDaemon:
             mock_beta.terminate.assert_not_called()
 
     def test_reconcile_update_path(self, daemon_env, tmp_path):
-        """Same alias but different path = terminate + new child."""
+        """Same alias but different path = register, build if needed, terminate + new child."""
         daemon = daemon_env["daemon"]
         config = daemon_env["config"]
         daemon._state_path = daemon_env["tmp_path"] / "daemon-state.json"
@@ -458,7 +515,7 @@ class TestWatchDaemon:
         daemon._current_repos = {r.alias: r for r in config.repos}
         daemon._children = {"alpha": mock_alpha, "beta": mock_beta}
 
-        # Create a new repo directory for alpha with a different path
+        # Create a new repo directory for alpha with a different path (no graph.db)
         new_repo = tmp_path / "repo-a-v2"
         new_repo.mkdir()
         (new_repo / ".git").mkdir()
@@ -473,12 +530,25 @@ class TestWatchDaemon:
             ],
         )
 
-        with patch("code_review_graph.daemon.subprocess.Popen") as mock_popen:
+        with (
+            patch("code_review_graph.daemon.subprocess.Popen") as mock_popen,
+            patch("code_review_graph.daemon.subprocess.run") as mock_run,
+            patch("code_review_graph.registry.Registry") as mock_registry_cls,
+        ):
             mock_new = MagicMock()
             mock_new.pid = 777
             mock_popen.return_value = mock_new
 
+            mock_run.return_value = MagicMock(returncode=0)
+            mock_registry = mock_registry_cls.return_value
+
             daemon.reconcile(updated_config)
+
+            # alpha should be registered at the new path
+            mock_registry.register.assert_called_once_with(str(new_repo), alias="alpha")
+
+            # alpha should be built (new path has no graph.db)
+            assert mock_run.call_count == 1
 
             # alpha should be terminated then respawned
             mock_alpha.terminate.assert_called_once()

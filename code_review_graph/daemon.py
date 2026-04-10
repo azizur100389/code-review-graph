@@ -550,7 +550,8 @@ class WatchDaemon:
         """Reconcile running watchers with the (possibly updated) config.
 
         Child processes are started, stopped, or restarted to match the
-        desired state.
+        desired state.  New repos are registered in the central registry
+        and their graphs are built automatically (mirroring ``start()``).
         """
         if new_config is not None:
             self._config = new_config
@@ -565,6 +566,24 @@ class WatchDaemon:
             for alias in desired.keys() & current
             if desired[alias].path != self._current_repos[alias].path
         }
+
+        # Register new/updated repos and build graphs *before* acquiring
+        # the lock so that long-running builds don't block health checks.
+        if to_add or to_update:
+            from .registry import Registry
+
+            registry = Registry()
+
+            repos_needing_build: list[WatchRepo] = []
+            for alias in to_add | to_update:
+                repo = desired[alias]
+                registry.register(repo.path, alias=repo.alias)
+                db_path = Path(repo.path) / ".code-review-graph" / "graph.db"
+                if not db_path.exists():
+                    repos_needing_build.append(repo)
+
+            for repo in repos_needing_build:
+                self._initial_build(repo)
 
         with self._lock:
             # Remove stale watchers
