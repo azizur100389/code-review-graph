@@ -104,6 +104,8 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".xs": "c",  # Perl XS: parsed as C to capture functions/structs/includes
     ".lua": "lua",
     ".luau": "luau",
+    ".ex": "elixir",
+    ".exs": "elixir",
     ".ipynb": "notebook",
 }
 
@@ -140,6 +142,7 @@ _CLASS_TYPES: dict[str, list[str]] = {
     "dart": ["class_definition", "mixin_declaration", "enum_declaration"],
     "lua": [],  # Lua has no class keyword; table-based OOP handled via constructs handler
     "luau": ["type_definition"],  # Luau type aliases; table-based OOP via constructs handler
+    "elixir": [],  # Elixir modules are `call` nodes, handled via constructs handler
 }
 
 _FUNCTION_TYPES: dict[str, list[str]] = {
@@ -175,6 +178,8 @@ _FUNCTION_TYPES: dict[str, list[str]] = {
     "dart": ["function_signature"],
     "lua": ["function_declaration"],
     "luau": ["function_declaration"],
+    # Elixir: def/defp are `call` nodes, handled via constructs handler
+    "elixir": [],
 }
 
 _IMPORT_TYPES: dict[str, list[str]] = {
@@ -201,6 +206,8 @@ _IMPORT_TYPES: dict[str, list[str]] = {
     # Lua/Luau: require() is a function_call, handled via _extract_lua_constructs
     "lua": [],
     "luau": [],
+    # Elixir: alias/import/require/use are `call` nodes, handled via constructs handler
+    "elixir": [],
 }
 
 _CALL_TYPES: dict[str, list[str]] = {
@@ -227,6 +234,7 @@ _CALL_TYPES: dict[str, list[str]] = {
     "solidity": ["call_expression"],
     "lua": ["function_call"],
     "luau": ["function_call"],
+    "elixir": ["call"],
 }
 
 # Patterns that indicate a test function
@@ -928,6 +936,14 @@ class CodeParser:
             ):
                 continue
 
+            # --- Elixir-specific constructs (defmodule/def/alias/etc.) ---
+            if language == "elixir" and self._extract_elixir_constructs(
+                child, node_type, source, language, file_path,
+                nodes, edges, enclosing_class, enclosing_func,
+                import_map, defined_names, _depth,
+            ):
+                continue
+
             # --- Dart call detection (see #87) ---
             # tree-sitter-dart does not wrap calls in a single
             # ``call_expression`` node; instead the pattern is
@@ -1426,6 +1442,347 @@ class CodeParser:
                         # Fallback: strip quotes from full text
                         raw = arg.text.decode("utf-8", errors="replace")
                         return raw.strip("'\"")
+        return None
+
+    # ------------------------------------------------------------------
+    # Elixir-specific helpers
+    # ------------------------------------------------------------------
+
+    # Keywords that form structural constructs; all are represented as
+    # `call` nodes whose first child is an `identifier` with one of these
+    # texts.  Regular function calls fall through to generic handling.
+    _ELIXIR_DEF_KEYWORDS = frozenset({"def", "defp", "defmacro", "defmacrop"})
+    _ELIXIR_IMPORT_KEYWORDS = frozenset({"alias", "import", "require", "use"})
+
+    def _extract_elixir_constructs(
+        self,
+        child,
+        node_type: str,
+        source: bytes,
+        language: str,
+        file_path: str,
+        nodes: list[NodeInfo],
+        edges: list[EdgeInfo],
+        enclosing_class: Optional[str],
+        enclosing_func: Optional[str],
+        import_map: Optional[dict[str, str]],
+        defined_names: Optional[set[str]],
+        _depth: int,
+    ) -> bool:
+        """Handle Elixir-specific AST constructs.
+
+        Every Elixir statement is represented as a ``call`` node whose
+        first child is an ``identifier`` naming the macro/keyword
+        (``defmodule``, ``def``, ``alias``, ``import``, ``require``,
+        ``use``, ``test``).  This handler intercepts those and emits
+        graph nodes/edges.  Regular function calls fall through and are
+        handled by the generic CALLS machinery.
+
+        Returns True if the child was fully handled and should be skipped
+        by the main loop.
+        """
+        if node_type != "call" or not child.children:
+            return False
+
+        first = child.children[0]
+        if first.type != "identifier":
+            # e.g. `dot` for Module.func(...) — let generic CALLS handle it.
+            return False
+
+        kw = first.text.decode("utf-8", errors="replace")
+
+        if kw == "defmodule":
+            return self._handle_elixir_defmodule(
+                child, source, language, file_path, nodes, edges,
+                enclosing_class, import_map, defined_names, _depth,
+            )
+        if kw in self._ELIXIR_DEF_KEYWORDS:
+            return self._handle_elixir_def(
+                child, source, language, file_path, nodes, edges,
+                enclosing_class, import_map, defined_names, _depth,
+                visibility="private" if kw in ("defp", "defmacrop") else "public",
+            )
+        if kw in self._ELIXIR_IMPORT_KEYWORDS:
+            return self._handle_elixir_import(
+                child, language, file_path, edges, kw,
+            )
+        if kw == "test" and enclosing_class is not None:
+            return self._handle_elixir_test(
+                child, source, language, file_path, nodes, edges,
+                enclosing_class, import_map, defined_names, _depth,
+            )
+        return False
+
+    def _handle_elixir_defmodule(
+        self,
+        child,
+        source: bytes,
+        language: str,
+        file_path: str,
+        nodes: list[NodeInfo],
+        edges: list[EdgeInfo],
+        enclosing_class: Optional[str],
+        import_map: Optional[dict[str, str]],
+        defined_names: Optional[set[str]],
+        _depth: int,
+    ) -> bool:
+        """Handle ``defmodule Name do ... end``.
+
+        Emits a Class node and recurses into the ``do_block`` with
+        ``enclosing_class=<full qualified module name>``.  Nested
+        ``defmodule`` calls produce dot-joined names (``Outer.Inner``).
+        """
+        module_name = self._elixir_first_alias_arg(child)
+        if not module_name:
+            return False
+
+        # Support nested defmodule: qualify with the enclosing class.
+        full_name = (
+            f"{enclosing_class}.{module_name}" if enclosing_class else module_name
+        )
+        qualified = self._qualify(full_name, file_path, None)
+
+        nodes.append(NodeInfo(
+            kind="Class",
+            name=full_name,
+            file_path=file_path,
+            line_start=child.start_point[0] + 1,
+            line_end=child.end_point[0] + 1,
+            language=language,
+            parent_name=None,
+        ))
+        edges.append(EdgeInfo(
+            kind="CONTAINS",
+            source=file_path,
+            target=qualified,
+            file_path=file_path,
+            line=child.start_point[0] + 1,
+        ))
+
+        # Recurse into the do_block with the new enclosing class.
+        for sub in child.children:
+            if sub.type == "do_block":
+                self._extract_from_tree(
+                    sub, source, language, file_path, nodes, edges,
+                    enclosing_class=full_name,
+                    enclosing_func=None,
+                    import_map=import_map,
+                    defined_names=defined_names,
+                    _depth=_depth + 1,
+                )
+        return True
+
+    def _handle_elixir_def(
+        self,
+        child,
+        source: bytes,
+        language: str,
+        file_path: str,
+        nodes: list[NodeInfo],
+        edges: list[EdgeInfo],
+        enclosing_class: Optional[str],
+        import_map: Optional[dict[str, str]],
+        defined_names: Optional[set[str]],
+        _depth: int,
+        visibility: str,
+    ) -> bool:
+        """Handle ``def foo(args) do ... end`` and ``defp foo(args) ...``.
+
+        The function name lives inside ``arguments > call > identifier``
+        (the function signature is itself a nested call node).  Short form
+        ``def foo, do: body`` is also supported.
+        """
+        func_name: Optional[str] = None
+        signature_call = None
+
+        for sub in child.children:
+            if sub.type != "arguments":
+                continue
+            for arg in sub.children:
+                if arg.type == "call" and arg.children:
+                    # Standard form: def name(params) ...
+                    for sub2 in arg.children:
+                        if sub2.type == "identifier":
+                            func_name = sub2.text.decode("utf-8", errors="replace")
+                            signature_call = arg
+                            break
+                    if func_name:
+                        break
+                if arg.type == "identifier":
+                    # Zero-arg shortcut: def foo, do: body
+                    func_name = arg.text.decode("utf-8", errors="replace")
+                    break
+            break
+
+        if not func_name:
+            return False
+
+        is_test = _is_test_function(func_name, file_path)
+        kind = "Test" if is_test else "Function"
+        qualified = self._qualify(func_name, file_path, enclosing_class)
+        params = (
+            self._get_params(signature_call, language, source)
+            if signature_call is not None else None
+        )
+
+        nodes.append(NodeInfo(
+            kind=kind,
+            name=func_name,
+            file_path=file_path,
+            line_start=child.start_point[0] + 1,
+            line_end=child.end_point[0] + 1,
+            language=language,
+            parent_name=enclosing_class,
+            params=params,
+            modifiers=visibility,
+            is_test=is_test,
+        ))
+        container = (
+            self._qualify(enclosing_class, file_path, None)
+            if enclosing_class else file_path
+        )
+        edges.append(EdgeInfo(
+            kind="CONTAINS",
+            source=container,
+            target=qualified,
+            file_path=file_path,
+            line=child.start_point[0] + 1,
+        ))
+
+        # Recurse into the do_block with enclosing_func set.  Short-form
+        # bodies live inside arguments > keywords > pair.
+        for sub in child.children:
+            if sub.type == "do_block":
+                self._extract_from_tree(
+                    sub, source, language, file_path, nodes, edges,
+                    enclosing_class=enclosing_class,
+                    enclosing_func=func_name,
+                    import_map=import_map,
+                    defined_names=defined_names,
+                    _depth=_depth + 1,
+                )
+            elif sub.type == "arguments":
+                for arg in sub.children:
+                    if arg.type == "keywords":
+                        self._extract_from_tree(
+                            arg, source, language, file_path, nodes, edges,
+                            enclosing_class=enclosing_class,
+                            enclosing_func=func_name,
+                            import_map=import_map,
+                            defined_names=defined_names,
+                            _depth=_depth + 1,
+                        )
+        return True
+
+    def _handle_elixir_import(
+        self,
+        child,
+        language: str,
+        file_path: str,
+        edges: list[EdgeInfo],
+        keyword: str,
+    ) -> bool:
+        """Handle ``alias``/``import``/``require``/``use`` top-level calls.
+
+        Emits an IMPORTS_FROM edge targeting the aliased module name.
+        """
+        target = self._elixir_first_alias_arg(child)
+        if not target:
+            return False
+        resolved = self._resolve_module_to_file(target, file_path, language)
+        edges.append(EdgeInfo(
+            kind="IMPORTS_FROM",
+            source=file_path,
+            target=resolved if resolved else target,
+            file_path=file_path,
+            line=child.start_point[0] + 1,
+            extra={"elixir_keyword": keyword},
+        ))
+        return True
+
+    def _handle_elixir_test(
+        self,
+        child,
+        source: bytes,
+        language: str,
+        file_path: str,
+        nodes: list[NodeInfo],
+        edges: list[EdgeInfo],
+        enclosing_class: str,
+        import_map: Optional[dict[str, str]],
+        defined_names: Optional[set[str]],
+        _depth: int,
+    ) -> bool:
+        """Handle the ExUnit ``test "name" do ... end`` macro.
+
+        Emits a Test node named by the string literal, attached to the
+        enclosing module.  Only fires when inside a module (otherwise
+        a top-level ``test`` call is treated as a regular CALLS edge).
+        """
+        test_name: Optional[str] = None
+        for sub in child.children:
+            if sub.type != "arguments":
+                continue
+            for arg in sub.children:
+                if arg.type == "string":
+                    for sub2 in arg.children:
+                        if sub2.type == "quoted_content":
+                            test_name = sub2.text.decode("utf-8", errors="replace")
+                            break
+                    if not test_name:
+                        raw = arg.text.decode("utf-8", errors="replace")
+                        test_name = raw.strip("'\"")
+                    break
+            break
+        if not test_name:
+            return False
+
+        qualified = self._qualify(test_name, file_path, enclosing_class)
+        nodes.append(NodeInfo(
+            kind="Test",
+            name=test_name,
+            file_path=file_path,
+            line_start=child.start_point[0] + 1,
+            line_end=child.end_point[0] + 1,
+            language=language,
+            parent_name=enclosing_class,
+            is_test=True,
+        ))
+        container = self._qualify(enclosing_class, file_path, None)
+        edges.append(EdgeInfo(
+            kind="CONTAINS",
+            source=container,
+            target=qualified,
+            file_path=file_path,
+            line=child.start_point[0] + 1,
+        ))
+
+        # Recurse into do_block with enclosing_func = test name.
+        for sub in child.children:
+            if sub.type == "do_block":
+                self._extract_from_tree(
+                    sub, source, language, file_path, nodes, edges,
+                    enclosing_class=enclosing_class,
+                    enclosing_func=test_name,
+                    import_map=import_map,
+                    defined_names=defined_names,
+                    _depth=_depth + 1,
+                )
+        return True
+
+    @staticmethod
+    def _elixir_first_alias_arg(call_node) -> Optional[str]:
+        """Return the text of the first ``alias`` argument of a call.
+
+        Used to extract module names from ``defmodule Name``, ``alias X``,
+        ``import X``, ``require X``, and ``use X``.
+        """
+        for sub in call_node.children:
+            if sub.type != "arguments":
+                continue
+            for arg in sub.children:
+                if arg.type == "alias":
+                    return arg.text.decode("utf-8", errors="replace")
         return None
 
     # ------------------------------------------------------------------
@@ -3140,6 +3497,15 @@ class CodeParser:
         if language in ("lua", "luau") and first.type in (
             "dot_index_expression", "method_index_expression",
         ):
+            for child in reversed(first.children):
+                if child.type == "identifier":
+                    return child.text.decode("utf-8", errors="replace")
+            return None
+
+        # Elixir: Module.func(args) is a `call` whose first child is `dot`
+        # with shape  alias + . + identifier.  Return only the method name;
+        # the module alias is captured as IMPORTS_FROM elsewhere.
+        if language == "elixir" and first.type == "dot":
             for child in reversed(first.children):
                 if child.type == "identifier":
                     return child.text.decode("utf-8", errors="replace")

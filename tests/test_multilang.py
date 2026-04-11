@@ -966,3 +966,125 @@ class TestLuauParsing:
         sources = {e.source.split("::")[-1] for e in calls}
         assert "Dog.fetch" in sources
         assert "Animal.speak" in sources
+
+
+class TestElixirParsing:
+    def setup_method(self):
+        self.parser = CodeParser()
+        self.nodes, self.edges = self.parser.parse_file(FIXTURES / "sample.ex")
+
+    def test_detects_language(self):
+        assert self.parser.detect_language(Path("lib/foo.ex")) == "elixir"
+        assert self.parser.detect_language(Path("test/foo_test.exs")) == "elixir"
+
+    def test_finds_top_level_modules(self):
+        classes = [n for n in self.nodes if n.kind == "Class"]
+        names = {c.name for c in classes}
+        assert "Calculator" in names
+        assert "CalculatorTest" in names
+
+    def test_finds_nested_module_with_qualified_name(self):
+        """Nested defmodule produces a dot-joined class name."""
+        classes = [n for n in self.nodes if n.kind == "Class"]
+        names = {c.name for c in classes}
+        assert "Calculator.Helpers" in names
+
+    def test_finds_public_functions(self):
+        funcs = [
+            n for n in self.nodes
+            if n.kind == "Function" and n.parent_name == "Calculator"
+        ]
+        names = {f.name for f in funcs}
+        assert "add" in names
+        assert "multiply" in names  # short-form def foo, do: ...
+        assert "sum_list" in names  # uses pipe operator
+
+    def test_finds_private_function_with_visibility_modifier(self):
+        privates = [
+            n for n in self.nodes
+            if n.kind == "Function"
+            and n.parent_name == "Calculator"
+            and n.modifiers == "private"
+        ]
+        names = {f.name for f in privates}
+        assert "private_helper" in names
+
+    def test_public_functions_marked_public(self):
+        adds = [
+            n for n in self.nodes
+            if n.kind == "Function" and n.name == "add"
+        ]
+        assert len(adds) == 1
+        assert adds[0].modifiers == "public"
+
+    def test_finds_nested_module_functions(self):
+        """Functions inside nested Helpers module have the dot-qualified parent."""
+        funcs = [
+            n for n in self.nodes
+            if n.kind == "Function" and n.parent_name == "Calculator.Helpers"
+        ]
+        names = {f.name for f in funcs}
+        assert "log" in names
+        assert "format_number" in names
+
+    def test_finds_aliases_and_imports(self):
+        imports = [e for e in self.edges if e.kind == "IMPORTS_FROM"]
+        targets = {e.target for e in imports}
+        assert "Calculator.Helpers" in targets  # alias
+        assert "Enum" in targets                # import
+        assert "Logger" in targets              # require
+        assert "GenServer" in targets           # use
+        assert "ExUnit.Case" in targets         # use inside test module
+
+    def test_finds_module_dot_function_calls(self):
+        """Module.function(args) produces a CALLS edge with the method name.
+
+        External modules (Logger, IO) resolve to the bare method name.
+        Locally-aliased modules (Helpers -> Calculator.Helpers) resolve to
+        the fully-qualified node name via the parser's alias resolution.
+        """
+        calls = [e for e in self.edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        # From `Logger.info("adding")` inside add/2 — external, bare name
+        assert "info" in targets
+        # From `IO.puts(msg)` inside Helpers.log — external, bare name
+        assert "puts" in targets
+        # From `Helpers.log("add called")` — local alias, resolved to qualified
+        assert any(t.endswith("::Calculator.Helpers.log") for t in targets)
+
+    def test_finds_local_qualified_calls_in_tests(self):
+        """Calls to the local Calculator module resolve via CALLS edges."""
+        calls = [e for e in self.edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert any("add" in t for t in targets)
+        assert any("multiply" in t for t in targets)
+
+    def test_detects_exunit_test_blocks(self):
+        tests = [n for n in self.nodes if n.kind == "Test"]
+        names = {t.name for t in tests}
+        assert "adds two numbers" in names
+        assert "multiplies numbers" in names
+        assert "sums positive numbers" in names
+        assert len(tests) == 3
+
+    def test_tests_belong_to_calculator_test_module(self):
+        tests = [n for n in self.nodes if n.kind == "Test"]
+        for t in tests:
+            assert t.parent_name == "CalculatorTest"
+            assert t.is_test is True
+
+    def test_nodes_have_elixir_language(self):
+        for node in self.nodes:
+            assert node.language == "elixir"
+
+    def test_finds_contains_edges(self):
+        contains = [e for e in self.edges if e.kind == "CONTAINS"]
+        targets = {e.target.split("::")[-1] for e in contains}
+        # File contains top-level modules
+        assert "Calculator" in targets
+        assert "CalculatorTest" in targets
+        assert "Calculator.Helpers" in targets
+        # Modules contain their functions (qualified form)
+        assert "Calculator.add" in targets
+        assert "Calculator.multiply" in targets
+        assert "Calculator.Helpers.log" in targets
