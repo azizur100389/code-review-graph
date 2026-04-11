@@ -194,6 +194,38 @@ class TestDataDir:
         content = (result / ".gitignore").read_text(encoding="utf-8")
         assert content.strip().endswith("*")
 
+    def test_auto_gitignore_is_valid_utf8(self, tmp_path, monkeypatch):
+        """Regression guard for #239 bug 1: the auto-generated .gitignore
+        must be written as UTF-8 on every platform.
+
+        Before the fix, ``write_text()`` was called without an encoding
+        argument.  The header contains an em-dash (U+2014) which Python
+        writes using the system default codepage on Windows (cp1252 →
+        byte 0x97), producing a file that cannot be decoded as UTF-8.
+        """
+        monkeypatch.delenv("CRG_DATA_DIR", raising=False)
+        from code_review_graph.incremental import get_data_dir
+        data_dir = get_data_dir(tmp_path)
+        gi = data_dir / ".gitignore"
+        assert gi.is_file()
+
+        # The file must be valid UTF-8 — this is what actually broke.
+        raw = gi.read_bytes()
+        # The em-dash must be stored as the proper UTF-8 sequence (0xE2 0x80 0x94),
+        # not as the cp1252 single byte 0x97.
+        assert b"\xe2\x80\x94" in raw, (
+            "auto-generated .gitignore is missing the UTF-8 em-dash; it was "
+            "probably written using the platform default codepage"
+        )
+        assert b"\x97" not in raw, (
+            "auto-generated .gitignore contains cp1252 byte 0x97 — indicates "
+            "write_text was called without encoding='utf-8'"
+        )
+
+        # And it must round-trip cleanly under strict UTF-8 decoding.
+        decoded = raw.decode("utf-8", errors="strict")
+        assert "—" in decoded, "em-dash missing from decoded gitignore"
+
     def test_env_override_replaces_repo_subdir(self, tmp_path, monkeypatch):
         """CRG_DATA_DIR replaces the default <repo>/.code-review-graph."""
         external = tmp_path / "external-graphs"
