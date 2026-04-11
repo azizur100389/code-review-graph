@@ -8,6 +8,7 @@ traversal prevention.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import threading
 import time
@@ -338,6 +339,7 @@ def suggest_refactorings(store: GraphStore) -> list[dict[str, Any]]:
 def apply_refactor(
     refactor_id: str,
     repo_root: Path,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Apply a previously previewed refactoring to source files.
 
@@ -345,12 +347,21 @@ def apply_refactor(
     within the repo root, then performs exact string replacements on the
     target files.
 
+    When ``dry_run=True``, computes a unified diff for each edited file
+    and returns it in the response **without writing to disk**. The pending
+    refactor is left in place so the caller can review the diff and then
+    invoke ``apply_refactor`` again with ``dry_run=False`` using the same
+    ``refactor_id`` to actually apply the changes.
+
     Args:
         refactor_id: ID from a prior ``rename_preview`` call.
         repo_root: Validated repository root path.
+        dry_run: If True, return unified diffs without writing files.
 
     Returns:
-        Status dict with applied count and modified files.
+        Status dict with applied count and modified files. When
+        ``dry_run=True``, also includes ``dry_run: True`` and a
+        ``diffs`` list with one entry per edited file.
     """
     repo_root = repo_root.resolve()
 
@@ -372,9 +383,18 @@ def apply_refactor(
 
     edits = preview.get("edits", [])
     if not edits:
-        return {"status": "ok", "applied": 0, "files_modified": [], "edits_applied": 0}
+        result: dict[str, Any] = {
+            "status": "ok",
+            "applied": 0,
+            "files_modified": [],
+            "edits_applied": 0,
+        }
+        if dry_run:
+            result["dry_run"] = True
+            result["diffs"] = []
+        return result
 
-    # --- Path traversal validation ---
+    # --- Path traversal validation (runs in both dry-run and real apply) ---
     for edit in edits:
         edit_path = Path(edit["file"]).resolve()
         try:
@@ -392,6 +412,7 @@ def apply_refactor(
     # --- Apply edits ---
     files_modified: set[str] = set()
     edits_applied = 0
+    diffs: list[dict[str, str]] = []
 
     for edit in edits:
         file_path = Path(edit["file"])
@@ -427,6 +448,21 @@ def apply_refactor(
                 new_content = content.replace(old_text, new_text, 1)
         else:
             new_content = content.replace(old_text, new_text, 1)
+
+        if dry_run:
+            # Compute a unified diff instead of writing.
+            diff_text = "".join(
+                difflib.unified_diff(
+                    content.splitlines(keepends=True),
+                    new_content.splitlines(keepends=True),
+                    fromfile=f"a/{file_path}",
+                    tofile=f"b/{file_path}",
+                    n=3,
+                ),
+            )
+            diffs.append({"file": str(file_path), "diff": diff_text})
+            continue
+
         try:
             file_path.write_text(new_content, encoding="utf-8")
             edits_applied += 1
@@ -434,6 +470,22 @@ def apply_refactor(
             logger.info("apply_refactor: applied edit to %s", file_path)
         except OSError as exc:
             logger.error("apply_refactor: could not write %s: %s", file_path, exc)
+
+    if dry_run:
+        # Leave the preview in _pending_refactors so the caller can apply
+        # it after reviewing the diff.  Do NOT consume the refactor_id.
+        logger.info(
+            "apply_refactor: dry-run completed %s — %d diffs generated",
+            refactor_id, len(diffs),
+        )
+        return {
+            "status": "ok",
+            "applied": 0,
+            "files_modified": [],
+            "edits_applied": 0,
+            "dry_run": True,
+            "diffs": diffs,
+        }
 
     # Remove from pending after successful application.
     with _refactor_lock:

@@ -571,6 +571,7 @@ def refactor_tool(
 def apply_refactor_tool(
     refactor_id: str,
     repo_root: Optional[str] = None,
+    dry_run: bool = False,
 ) -> dict:
     """Apply a previously previewed refactoring to source files.
 
@@ -578,15 +579,24 @@ def apply_refactor_tool(
     applies the exact string replacements to the target files. Previews
     expire after 10 minutes.
 
+    When ``dry_run=True``, returns a unified diff for each edited file
+    **without writing to disk**. The pending refactor is preserved so
+    the caller can review the diffs and then call this tool again with
+    ``dry_run=False`` using the same ``refactor_id`` to actually apply
+    the changes (two-step commit pattern).
+
     Security: All edit paths are validated to be within the repo root.
     Only exact string replacements are performed (no regex, no eval).
 
     Args:
         refactor_id: The refactor ID from refactor_tool's response.
         repo_root: Repository root path. Auto-detected if omitted.
+        dry_run: If True, preview diffs without writing files. Default False.
     """
     return apply_refactor_func(
-        refactor_id=refactor_id, repo_root=_resolve_repo_root(repo_root),
+        refactor_id=refactor_id,
+        repo_root=_resolve_repo_root(repo_root),
+        dry_run=dry_run,
     )
 
 

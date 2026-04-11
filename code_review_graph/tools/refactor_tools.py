@@ -133,19 +133,27 @@ def refactor_func(
 def apply_refactor_func(
     refactor_id: str,
     repo_root: str | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Apply a previously previewed refactoring to source files.
 
     [REFACTOR] Validates the refactor_id, checks expiry, ensures all edit
     paths are within the repo root, then performs exact string replacements.
 
+    When ``dry_run=True``, returns unified diffs for each edited file
+    **without writing to disk**. The pending refactor is left in place so
+    the caller can review the diffs and then call this function again with
+    ``dry_run=False`` using the same ``refactor_id`` to actually apply.
+
     Args:
         refactor_id: ID returned by a prior ``refactor_tool(mode="rename")``
             call.
         repo_root: Repository root path. Auto-detected if omitted.
+        dry_run: If True, return unified diffs without writing files.
 
     Returns:
-        Status with count of applied edits and modified files.
+        Status with count of applied edits and modified files. When
+        ``dry_run=True``, also includes a ``diffs`` list.
     """
     try:
         root = (
@@ -156,5 +164,5 @@ def apply_refactor_func(
     except (RuntimeError, ValueError) as exc:
         return {"status": "error", "error": str(exc)}
 
-    result = apply_refactor(refactor_id, root)
+    result = apply_refactor(refactor_id, root, dry_run=dry_run)
     return result

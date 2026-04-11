@@ -351,6 +351,170 @@ class TestApplyRefactor:
             (tmp_dir / ".git").rmdir()
             tmp_dir.rmdir()
 
+    def test_apply_refactor_dry_run_returns_diff(self):
+        """Regression test for #176: dry_run returns a unified diff and
+        does not write to disk or consume the preview."""
+        tmp_dir = Path(tempfile.mkdtemp())
+        (tmp_dir / ".git").mkdir()
+        target_file = tmp_dir / "example.py"
+        original_content = "def old_func():\n    return old_func\n"
+        target_file.write_text(original_content, encoding="utf-8")
+        try:
+            rid = "dryrun1"
+            with _refactor_lock:
+                _pending_refactors[rid] = {
+                    "refactor_id": rid,
+                    "type": "rename",
+                    "old_name": "old_func",
+                    "new_name": "new_func",
+                    "edits": [{
+                        "file": str(target_file),
+                        "line": 1,
+                        "old": "old_func",
+                        "new": "new_func",
+                        "confidence": "high",
+                    }],
+                    "stats": {"high": 1, "medium": 0, "low": 0},
+                    "created_at": time.time(),
+                }
+            result = apply_refactor(rid, tmp_dir, dry_run=True)
+
+            # Response shape.
+            assert result["status"] == "ok"
+            assert result["dry_run"] is True
+            assert result["edits_applied"] == 0
+            assert result["files_modified"] == []
+            assert "diffs" in result
+            assert len(result["diffs"]) == 1
+
+            # Diff content.
+            diff = result["diffs"][0]
+            assert diff["file"] == str(target_file)
+            assert "--- a/" in diff["diff"]
+            assert "+++ b/" in diff["diff"]
+            assert "-def old_func():" in diff["diff"]
+            assert "+def new_func():" in diff["diff"]
+
+            # File on disk must be untouched.
+            assert target_file.read_text(encoding="utf-8") == original_content
+
+            # Preview must still be in the cache (not consumed).
+            with _refactor_lock:
+                assert rid in _pending_refactors
+        finally:
+            with _refactor_lock:
+                _pending_refactors.pop(rid, None)
+            target_file.unlink(missing_ok=True)
+            (tmp_dir / ".git").rmdir()
+            tmp_dir.rmdir()
+
+    def test_apply_refactor_dry_run_then_apply(self):
+        """Regression test for #176: a dry-run followed by a real apply
+        with the same refactor_id succeeds and writes the file."""
+        tmp_dir = Path(tempfile.mkdtemp())
+        (tmp_dir / ".git").mkdir()
+        target_file = tmp_dir / "example.py"
+        target_file.write_text("def old_func():\n    pass\n", encoding="utf-8")
+        try:
+            rid = "dryrun_then_apply"
+            with _refactor_lock:
+                _pending_refactors[rid] = {
+                    "refactor_id": rid,
+                    "type": "rename",
+                    "old_name": "old_func",
+                    "new_name": "new_func",
+                    "edits": [{
+                        "file": str(target_file),
+                        "line": 1,
+                        "old": "old_func",
+                        "new": "new_func",
+                        "confidence": "high",
+                    }],
+                    "stats": {"high": 1, "medium": 0, "low": 0},
+                    "created_at": time.time(),
+                }
+
+            # Dry run first — no write, preview retained.
+            dry_result = apply_refactor(rid, tmp_dir, dry_run=True)
+            assert dry_result["status"] == "ok"
+            assert dry_result["dry_run"] is True
+            assert "old_func" in target_file.read_text(encoding="utf-8")
+
+            # Real apply with the same refactor_id — writes the file.
+            real_result = apply_refactor(rid, tmp_dir, dry_run=False)
+            assert real_result["status"] == "ok"
+            assert real_result["edits_applied"] == 1
+            assert "dry_run" not in real_result  # shape unchanged on real apply
+            content = target_file.read_text(encoding="utf-8")
+            assert "new_func" in content
+            assert "old_func" not in content
+
+            # Preview now consumed.
+            with _refactor_lock:
+                assert rid not in _pending_refactors
+        finally:
+            target_file.unlink(missing_ok=True)
+            (tmp_dir / ".git").rmdir()
+            tmp_dir.rmdir()
+
+    def test_apply_refactor_dry_run_blocks_path_traversal(self):
+        """Regression test for #176: path-traversal check still fires in
+        dry-run mode — dry-run must not be an escape hatch for safety."""
+        tmp_dir = Path(tempfile.mkdtemp())
+        (tmp_dir / ".git").mkdir()
+        try:
+            rid = "dryrun_traversal"
+            with _refactor_lock:
+                _pending_refactors[rid] = {
+                    "refactor_id": rid,
+                    "type": "rename",
+                    "old_name": "old",
+                    "new_name": "new",
+                    "edits": [{
+                        "file": "/etc/passwd",
+                        "line": 1,
+                        "old": "old",
+                        "new": "new",
+                        "confidence": "high",
+                    }],
+                    "stats": {"high": 1, "medium": 0, "low": 0},
+                    "created_at": time.time(),
+                }
+            result = apply_refactor(rid, tmp_dir, dry_run=True)
+            assert result["status"] == "error"
+            assert "outside repo root" in result["error"].lower()
+        finally:
+            with _refactor_lock:
+                _pending_refactors.pop(rid, None)
+            (tmp_dir / ".git").rmdir()
+            tmp_dir.rmdir()
+
+    def test_apply_refactor_dry_run_rejects_expired(self):
+        """Regression test for #176: expired previews are still rejected
+        in dry-run mode."""
+        tmp_dir = Path(tempfile.mkdtemp())
+        (tmp_dir / ".git").mkdir()
+        try:
+            rid = "dryrun_expired"
+            with _refactor_lock:
+                _pending_refactors[rid] = {
+                    "refactor_id": rid,
+                    "type": "rename",
+                    "old_name": "old",
+                    "new_name": "new",
+                    "edits": [],
+                    "stats": {"high": 0, "medium": 0, "low": 0},
+                    "created_at": time.time() - REFACTOR_EXPIRY_SECONDS - 10,
+                }
+            result = apply_refactor(rid, tmp_dir, dry_run=True)
+            assert result["status"] == "error"
+            assert "expired" in result["error"].lower()
+        finally:
+            with _refactor_lock:
+                _pending_refactors.pop(rid, None)
+            (tmp_dir / ".git").rmdir()
+            tmp_dir.rmdir()
+
 
 class TestPendingRefactorsThreadSafe:
     """Tests for thread-safety of the pending refactors storage."""
