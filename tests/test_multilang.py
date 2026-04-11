@@ -966,3 +966,87 @@ class TestLuauParsing:
         sources = {e.source.split("::")[-1] for e in calls}
         assert "Dog.fetch" in sources
         assert "Animal.speak" in sources
+
+
+class TestBashParsing:
+    def setup_method(self):
+        self.parser = CodeParser()
+        self.nodes, self.edges = self.parser.parse_file(FIXTURES / "sample.sh")
+
+    def test_detects_language(self):
+        assert self.parser.detect_language(Path("install.sh")) == "bash"
+        assert self.parser.detect_language(Path("run.bash")) == "bash"
+        assert self.parser.detect_language(Path("config.zsh")) == "bash"
+
+    def test_finds_function_definitions_paren_form(self):
+        """foo() { ... } style is detected."""
+        funcs = [n for n in self.nodes if n.kind == "Function"]
+        names = {f.name for f in funcs}
+        assert "greet" in names
+        assert "helper" in names
+        assert "main" in names
+
+    def test_finds_function_definitions_function_keyword_form(self):
+        """function foo { ... } and function foo() { ... } styles are detected."""
+        funcs = [n for n in self.nodes if n.kind == "Function"]
+        names = {f.name for f in funcs}
+        assert "build_message" in names
+        assert "log_error" in names
+
+    def test_finds_source_imports(self):
+        """source lib.sh and . lib.sh both produce IMPORTS_FROM edges."""
+        imports = [e for e in self.edges if e.kind == "IMPORTS_FROM"]
+        targets = {e.target for e in imports}
+        assert "lib/utils.sh" in targets      # source lib/utils.sh
+        assert "config/defaults.sh" in targets  # . config/defaults.sh
+        assert "lib/helpers.sh" in targets    # source "lib/helpers.sh"
+        assert len(imports) == 3
+
+    def test_finds_calls_between_local_functions(self):
+        """Calls between locally-defined functions appear as CALLS edges."""
+        calls = [e for e in self.edges if e.kind == "CALLS"]
+        # main calls greet, helper, build_message (resolved to local qualified names)
+        sources = {e.source.split("::")[-1] for e in calls}
+        assert "main" in sources
+        # At least one call target must be the local greet function
+        targets = {e.target for e in calls}
+        assert any("greet" in t for t in targets)
+
+    def test_finds_external_command_calls(self):
+        """External binaries (curl, grep, awk) are recorded as CALLS targets."""
+        calls = [e for e in self.edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "curl" in targets
+        assert "grep" in targets
+        assert "awk" in targets
+
+    def test_finds_contains_edges(self):
+        """File CONTAINS each top-level function."""
+        contains = [e for e in self.edges if e.kind == "CONTAINS"]
+        targets = {e.target.split("::")[-1] for e in contains}
+        assert "greet" in targets
+        assert "helper" in targets
+        assert "main" in targets
+        assert "build_message" in targets
+
+    def test_detects_test_functions(self):
+        """test_* prefix is classified as Test kind."""
+        tests = [n for n in self.nodes if n.kind == "Test"]
+        names = {t.name for t in tests}
+        assert "test_greet" in names
+        assert "test_helper_addition" in names
+        assert len(tests) == 2
+
+    def test_nodes_have_bash_language(self):
+        for node in self.nodes:
+            assert node.language == "bash"
+
+    def test_calls_inside_functions(self):
+        """Verify that commands inside a function become CALLS edges with
+        the enclosing function as source."""
+        calls = [e for e in self.edges if e.kind == "CALLS"]
+        sources = {e.source.split("::")[-1] for e in calls}
+        # greet calls echo and log_info
+        assert "greet" in sources
+        # main calls curl, grep, awk
+        assert "main" in sources

@@ -104,6 +104,10 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".xs": "c",  # Perl XS: parsed as C to capture functions/structs/includes
     ".lua": "lua",
     ".luau": "luau",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".ksh": "bash",
     ".ipynb": "notebook",
 }
 
@@ -140,6 +144,7 @@ _CLASS_TYPES: dict[str, list[str]] = {
     "dart": ["class_definition", "mixin_declaration", "enum_declaration"],
     "lua": [],  # Lua has no class keyword; table-based OOP handled via constructs handler
     "luau": ["type_definition"],  # Luau type aliases; table-based OOP via constructs handler
+    "bash": [],  # Bash has no classes
 }
 
 _FUNCTION_TYPES: dict[str, list[str]] = {
@@ -175,6 +180,7 @@ _FUNCTION_TYPES: dict[str, list[str]] = {
     "dart": ["function_signature"],
     "lua": ["function_declaration"],
     "luau": ["function_declaration"],
+    "bash": ["function_definition"],
 }
 
 _IMPORT_TYPES: dict[str, list[str]] = {
@@ -201,6 +207,8 @@ _IMPORT_TYPES: dict[str, list[str]] = {
     # Lua/Luau: require() is a function_call, handled via _extract_lua_constructs
     "lua": [],
     "luau": [],
+    # Bash: source / . are commands, handled via _extract_bash_constructs
+    "bash": [],
 }
 
 _CALL_TYPES: dict[str, list[str]] = {
@@ -227,6 +235,7 @@ _CALL_TYPES: dict[str, list[str]] = {
     "solidity": ["call_expression"],
     "lua": ["function_call"],
     "luau": ["function_call"],
+    "bash": ["command"],
 }
 
 # Patterns that indicate a test function
@@ -928,6 +937,13 @@ class CodeParser:
             ):
                 continue
 
+            # --- Bash-specific constructs (source / . imports) ---
+            if language == "bash" and self._extract_bash_constructs(
+                child, node_type, source, language, file_path,
+                nodes, edges, enclosing_class, enclosing_func,
+            ):
+                continue
+
             # --- Dart call detection (see #87) ---
             # tree-sitter-dart does not wrap calls in a single
             # ``call_expression`` node; instead the pattern is
@@ -1426,6 +1442,86 @@ class CodeParser:
                         # Fallback: strip quotes from full text
                         raw = arg.text.decode("utf-8", errors="replace")
                         return raw.strip("'\"")
+        return None
+
+    # ------------------------------------------------------------------
+    # Bash-specific helpers
+    # ------------------------------------------------------------------
+
+    def _extract_bash_constructs(
+        self,
+        child,
+        node_type: str,
+        source: bytes,
+        language: str,
+        file_path: str,
+        nodes: list[NodeInfo],
+        edges: list[EdgeInfo],
+        enclosing_class: Optional[str],
+        enclosing_func: Optional[str],
+    ) -> bool:
+        """Handle Bash-specific AST constructs.
+
+        Returns True if the child was fully handled and should be skipped
+        by the main loop.
+
+        Handles:
+        - ``source lib.sh`` / ``. lib.sh`` commands -> IMPORTS_FROM edge
+        """
+        if node_type != "command":
+            return False
+
+        target = self._bash_get_source_target(child)
+        if target is None:
+            return False
+
+        resolved = self._resolve_module_to_file(target, file_path, language)
+        edges.append(EdgeInfo(
+            kind="IMPORTS_FROM",
+            source=file_path,
+            target=resolved if resolved else target,
+            file_path=file_path,
+            line=child.start_point[0] + 1,
+        ))
+        return True
+
+    @staticmethod
+    def _bash_get_source_target(command_node) -> Optional[str]:
+        """Extract the sourced file path from a ``source`` / ``.`` command.
+
+        Returns the literal target string or None if this command is not
+        a source/dot-include. Handles both::
+
+            source lib/utils.sh
+            . config/defaults.sh
+            source "lib/utils.sh"
+        """
+        if not command_node.children:
+            return None
+        first = command_node.children[0]
+        if first.type != "command_name":
+            return None
+
+        # Read the command name (must be "source" or ".").
+        cmd_name = None
+        for sub in first.children:
+            if sub.type == "word":
+                cmd_name = sub.text.decode("utf-8", errors="replace")
+                break
+        if cmd_name not in ("source", "."):
+            return None
+
+        # The second child of `command` is the argument.
+        for arg in command_node.children[1:]:
+            if arg.type == "word":
+                return arg.text.decode("utf-8", errors="replace")
+            if arg.type == "string":
+                # Strip quotes from string_content child or full text.
+                for sub in arg.children:
+                    if sub.type == "string_content":
+                        return sub.text.decode("utf-8", errors="replace")
+                raw = arg.text.decode("utf-8", errors="replace")
+                return raw.strip("'\"")
         return None
 
     # ------------------------------------------------------------------
@@ -2789,6 +2885,14 @@ class CodeParser:
                 for child in node.children:
                     if child.type in ("receive", "fallback"):
                         return child.text.decode("utf-8", errors="replace")
+        # Bash: function_definition uses either `foo() { ... }` (word child)
+        # or `function foo { ... }` (function keyword + word child). The name
+        # is the first `word` child in both shapes.
+        if language == "bash" and node.type == "function_definition":
+            for child in node.children:
+                if child.type == "word":
+                    return child.text.decode("utf-8", errors="replace")
+            return None
         # Lua/Luau: function_declaration names may be dot_index_expression or
         # method_index_expression (e.g. function Animal.new() / Animal:speak()).
         # Return only the method name; the table name is used as parent_name
@@ -3143,6 +3247,15 @@ class CodeParser:
             for child in reversed(first.children):
                 if child.type == "identifier":
                     return child.text.decode("utf-8", errors="replace")
+            return None
+
+        # Bash: `command` node wraps `command_name > word` with the command text.
+        # Skip commands whose name is a variable expansion (simple_expansion,
+        # command_substitution) — we cannot resolve those statically.
+        if language == "bash" and first.type == "command_name":
+            for sub in first.children:
+                if sub.type == "word":
+                    return sub.text.decode("utf-8", errors="replace")
             return None
 
         # Method call: obj.method(args)
