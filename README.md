@@ -67,7 +67,6 @@ Build the code review graph for this project
 
 The initial build takes ~10 seconds for a 500-file project. After that, the graph updates automatically on every file edit and git commit.
 
----
 
 ## How It Works
 
@@ -350,6 +349,21 @@ pip install code-review-graph[all]                 # All optional dependencies
 </details>
 
 ---
+
+## Troubleshooting
+
+### Windows Configuration Issues (Invalid JSON / Connection Closed)
+If you are using Windows and encounter `Invalid JSON: EOF while parsing` or `MCP error -32000: Connection closed` when connecting via Claude Code, do not use the `cmd /c` wrapper in your config.
+
+Ensure `fastmcp` is updated to at least `3.2.4+`. Then, configure your `~/.claude.json` to execute the `.exe` directly and pass the UTF-8 environment variable via the config:
+
+```json
+"code-review-graph": {
+  "command": "C:\\path\\to\\your\\venv\\Scripts\\code-review-graph.exe",
+  "args": ["serve", "--repo", "C:\\path\\to\\your\\project"],
+  "env": { "PYTHONUTF8": "1" }
+}
+```
 
 ## Contributing
 
