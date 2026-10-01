@@ -178,6 +178,10 @@ map values link to provider nodes; ordinary resource expressions retain resource
 Storybook CSF files (`*.stories.js`, `.jsx`, `.ts`, `.tsx`) are indexed as test/demo code.
 Their imports, calls, and references alone do not keep application symbols alive in
 dead-code reports. Normal application callers and ordinary test evidence still count.
+When Python or Ruby classes in one file share a leaf name, their methods use the full
+enclosing class/module chain (for example, `Alpha.Same.run` and `Beta.Same.run`). Local
+calls stay in that lexical class. Unique class-leaf method names retain their existing
+identities. Rebuild an existing graph to replace rows created with colliding identities.
 
 - **Nodes**: Files, Classes, Functions/Methods, Types, Tests, plus Endpoints, Schedulers and ConfigProperties where framework enrichment applies
 - **Edges**: CALLS, IMPORTS_FROM, INHERITS, IMPLEMENTS, CONTAINS, TESTED_BY, DEPENDS_ON, REFERENCES, plus framework-specific kinds (INJECTS, HANDLES, TRIGGERS, PUBLISHES, CONSUMES/PRODUCES, DEPENDS_ON_CONFIG, TEMPORAL_STUB)
