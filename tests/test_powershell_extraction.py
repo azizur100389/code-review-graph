@@ -58,12 +58,29 @@ def test_approved_test_verb_in_test_file_is_still_test_code():
     b"function Get-Many { foreach ($i in 1..3) { Get-Leaf } }",
     b"1..10 | Measure-Object",
     b"function Get-Many { foreach ($i in -3..-1) { Get-Leaf } }",
+    b"1.5..3.5 | Measure-Object",
+    b".5..3.5 | Measure-Object",
+    b"0x1..0x3 | Measure-Object",
+    b"0b1..0b11 | Measure-Object",
+    b"1e1..2e1 | Measure-Object",
+    b"1kb..3kb | Measure-Object",
+    b"1UL..3UL | Measure-Object",
+    b"1d..3d | Measure-Object",
+    b"1 .. 3 | Measure-Object",
 ])
 def test_numeric_ranges_are_not_command_calls(source):
     _, edges = CodeParser().parse_bytes(Path("app.ps1"), source)
     targets = {e.target.rsplit("::", 1)[-1] for e in edges if e.kind == "CALLS"}
     assert not any(".." in target for target in targets)
     assert targets & {"Get-Leaf", "Measure-Object"}
+
+
+@pytest.mark.parametrize("name", [
+    "1..3.ps1", "build..release", "1gbus..2gbus", "1.5ul..3ul", "0b1d..0b11d",
+])
+def test_range_like_command_names_remain_calls(name):
+    _, edges = CodeParser().parse_bytes(Path("app.ps1"), name.encode())
+    assert any(e.kind == "CALLS" and e.target.endswith(name) for e in edges)
 
 
 @pytest.mark.parametrize("path,expected", [("resource.psm1", False), ("tests/resource.psm1", True)])

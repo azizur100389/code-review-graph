@@ -2939,6 +2939,19 @@ def _ansible_is_play_item(item: object) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# Numeric endpoints accepted in PowerShell range expressions. Match the entire
+# literal so command names such as 1..3.ps1 and malformed suffixes stay calls.
+# https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_numeric_literals
+_POWERSHELL_NUMBER_PATTERN = (
+    r"[+-]?(?:(?:0x[0-9a-f]+|0b[01]+)(?:u[ysl]?|[ysln])?"
+    r"|\d+(?:u[ysl]?|[yslnd])?"
+    r"|(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?d?)(?:[kmgtp]b)?"
+)
+_POWERSHELL_RANGE_RE = re.compile(
+    rf"{_POWERSHELL_NUMBER_PATTERN}\.\.{_POWERSHELL_NUMBER_PATTERN}", re.IGNORECASE,
+)
+
+
 class CodeParser:
     """Parses source files using Tree-sitter and extracts structural information."""
 
@@ -18605,7 +18618,7 @@ class CodeParser:
                     txt = child.text.decode("utf-8", errors="replace").strip()
                     # The PowerShell grammar can wrap a numeric range in a
                     # command_name even though it is a pipeline expression.
-                    if language == "powershell" and re.fullmatch(r"[+-]?\d+\.\.[+-]?\d+", txt):
+                    if language == "powershell" and _POWERSHELL_RANGE_RE.fullmatch(txt):
                         return None
                     return txt or None
             return None
