@@ -309,6 +309,8 @@ def find_dead_code(
     suffix_call_files: dict[str, set[str]] = {}
     tested_files: dict[str, set[str]] = {}
     member_call_names: set[str] = set()
+    class_names = {node.name.lower() for node in candidates if node.kind == "Class"}
+    max_class_name_length = max(map(len, class_names), default=0)
     class_bases: dict[str, list[str]] = {}
     base_targets: dict[str, set[str]] = {}
     importer_files: dict[str, set[str]] = {}
@@ -330,9 +332,17 @@ def find_dead_code(
                 )
             # Preserve the old substring heuristic: Widget. also matches
             # MyWidget. (conservative for dead-code deletion suggestions).
-            for match in re.finditer(r"([\w$]+)\.", target):
-                component = match.group(1).lower()
-                member_call_names.update(component[i:] for i in range(len(component)))
+            # Every dot can terminate a class name, including a dotted Elixir
+            # module. Bound suffixes by candidate name length, so long file
+            # paths do not create a quadratic set of irrelevant substrings.
+            lowered_target = target.lower()
+            for end, character in enumerate(lowered_target):
+                if character == ".":
+                    member_call_names.update(
+                        lowered_target[start:end]
+                        for start in range(max(0, end - max_class_name_length), end)
+                        if lowered_target[start:end] in class_names
+                    )
         elif edge_kind == "TESTED_BY":
             tested_files.setdefault(source, set()).add(file_path)
         elif edge_kind == "INHERITS":

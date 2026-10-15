@@ -78,6 +78,19 @@ def test_member_call_keeps_legacy_substring_heuristic(tmp_path):
         assert find_dead_code(store) == []
 
 
+def test_dotted_member_call_keeps_each_enclosing_scope_alive(tmp_path):
+    with GraphStore(tmp_path / "graph.db") as store:
+        for name in ("MyApp", "MyApp.Accounts", "Accounts"):
+            _node(store, name, kind="Class", language="elixir")
+        store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="/repo/app.ex::caller",
+            target="/repo/app.ex::MyApp.Accounts.normalize",
+            file_path="/repo/app.ex", line=1,
+        ))
+        store.commit()
+        assert find_dead_code(store, kind="Class") == []
+
+
 def test_partial_qualified_call_respects_import_ambiguity(tmp_path):
     with GraphStore(tmp_path / "graph.db") as store:
         _node(store, "helper", file="/repo/one.py")
