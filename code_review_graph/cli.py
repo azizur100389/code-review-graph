@@ -1919,7 +1919,11 @@ def _dispatch() -> None:
                     alias_str = f"  ({alias})" if alias else ""
                     print(f"  {entry['path']}{alias_str}")
                     if registered_data_dir := entry.get("data_dir"):
-                        missing = " [MISSING]" if not Path(registered_data_dir).is_dir() else ""
+                        try:
+                            accessible = Path(registered_data_dir).is_dir()
+                        except OSError:
+                            accessible = False
+                        missing = " [MISSING]" if not accessible else ""
                         print(f"    data_dir: {registered_data_dir}{missing}")
         return
 
