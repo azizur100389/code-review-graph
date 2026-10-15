@@ -54,6 +54,31 @@ def test_approved_test_verb_in_test_file_is_still_test_code():
     assert node.is_test
 
 
+@pytest.mark.parametrize("source", [
+    b"function Get-Many { foreach ($i in 1..3) { Get-Leaf } }",
+    b"1..10 | Measure-Object",
+    b"function Get-Many { foreach ($i in -3..-1) { Get-Leaf } }",
+])
+def test_numeric_ranges_are_not_command_calls(source):
+    _, edges = CodeParser().parse_bytes(Path("app.ps1"), source)
+    targets = {e.target.rsplit("::", 1)[-1] for e in edges if e.kind == "CALLS"}
+    assert not any(".." in target for target in targets)
+    assert targets & {"Get-Leaf", "Measure-Object"}
+
+
+@pytest.mark.parametrize("path,expected", [("resource.psm1", False), ("tests/resource.psm1", True)])
+def test_dsc_test_method_uses_file_context(path, expected):
+    nodes, edges = CodeParser(repo_root=Path("/repo")).parse_bytes(
+        Path("/repo") / path,
+        b"class R { [bool] Test() { return Get-State } }",
+    )
+    node = next(n for n in nodes if n.name == "Test")
+    assert node.is_test is expected
+    assert (node.kind == "Test") is expected
+    if not expected:
+        assert all(e.kind != "TESTED_BY" for e in edges)
+
+
 @pytest.mark.parametrize("name,source", [
     ("app.py", b"def helper(): pass\ndef caller(): helper()\n"),
     ("app.sh", b"helper() { echo ok; }\ncaller() { helper; }\ncaller\n"),

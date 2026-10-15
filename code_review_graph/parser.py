@@ -11870,8 +11870,9 @@ class CodeParser:
             decorators = tuple(deco_list)
 
         is_test = _is_test_function(name, file_path, decorators, repo_root=self._repo_root)
-        # Test-* is an approved PowerShell verb, not a test declaration.
-        if language == "powershell" and name.casefold().startswith("test-"):
+        # PowerShell's Test-* verb and DSC Test() methods are production
+        # declarations unless the containing file is test code.
+        if language == "powershell":
             is_test = self._is_test_path(file_path)
         # PHPUnit's name convention is ``test*`` (not only ``test_*``).
         if (
@@ -18581,6 +18582,10 @@ class CodeParser:
                 if child.type == "command_name":
                     # command_name wraps a word — get its text
                     txt = child.text.decode("utf-8", errors="replace").strip()
+                    # The PowerShell grammar can wrap a numeric range in a
+                    # command_name even though it is a pipeline expression.
+                    if language == "powershell" and re.fullmatch(r"[+-]?\d+\.\.[+-]?\d+", txt):
+                        return None
                     return txt or None
             return None
 
