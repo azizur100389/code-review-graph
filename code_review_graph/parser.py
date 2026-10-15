@@ -2690,7 +2690,10 @@ def _hcl_ref_target(
     root: str, attrs: list[str], *, provider: bool = False,
 ) -> Optional[str]:
     """Map a ``variable_expr.get_attr*`` chain to its canonical graph name."""
-    if provider and root not in _HCL_REF_PREFIXES:
+    # Provider meta-arguments use the provider namespace even when a local
+    # provider name collides with an expression root such as "local".
+    # Iterator expressions inside an indexed provider remain ordinary refs.
+    if provider and root not in {"each", "count", "self", "path", "terraform"}:
         return ".".join(["provider", root] + attrs[:1])
     if root == "var" and attrs:
         return f"var.{attrs[0]}"

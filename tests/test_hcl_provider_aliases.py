@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from code_review_graph.graph import GraphStore
 from code_review_graph.parser import CodeParser
 
@@ -65,4 +67,36 @@ resource "example" "x" {
 ''')
     assert {e.target for e in edges if e.kind == 'REFERENCES'} == {
         'main.tf::resource.aws.west'
+    }
+
+
+@pytest.mark.parametrize("alias", ["", ".fs"])
+def test_local_provider_does_not_resolve_to_a_local_value(alias):
+    nodes, edges = CodeParser().parse_bytes(Path("main.tf"), f'''
+provider "local" {{}}
+provider "local" {{ alias = "fs" }}
+locals {{ fs = "ordinary local" }}
+resource "local_file" "x" {{
+  provider = local{alias}
+  content = local.fs
+}}
+module "child" {{
+  source = "./child"
+  providers = {{ local = local, local.other = local.fs }}
+}}
+'''.encode())
+    resource_refs = {e.target for e in edges if e.kind == "REFERENCES"
+                     and e.source == "main.tf::resource.local_file.x"}
+    assert resource_refs == {f"main.tf::provider.local{alias}", "main.tf::local.fs"}
+    module_refs = {e.target for e in edges if e.kind == "REFERENCES"
+                   and e.source == "main.tf::module.child"}
+    assert module_refs == {"main.tf::provider.local", "main.tf::provider.local.fs"}
+
+
+def test_indexed_provider_preserves_iterator_references():
+    _, edges = CodeParser().parse_bytes(Path("main.tf"), b'''
+resource "aws_instance" "x" { provider = aws.by_region[each.key] }
+''')
+    assert {e.target for e in edges if e.kind == "REFERENCES"} == {
+        "main.tf::provider.aws.by_region"
     }
