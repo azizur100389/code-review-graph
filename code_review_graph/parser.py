@@ -5302,10 +5302,16 @@ class CodeParser:
             for node in nodes
             if node.language == "go" and "go_receiver" in node.extra
         }
+        disambiguated_leaves = {
+            node.parent_name.rsplit(".", 1)[-1] for node in nodes
+            if node.language in ("python", "ruby") and node.parent_name
+            and "." in node.parent_name and node.kind in ("Function", "Test")
+        }
         disambiguated_scopes = {
             node.parent_name for node in nodes
             if node.language in ("python", "ruby") and node.parent_name
-            and "." in node.parent_name and node.kind in ("Function", "Test")
+            and node.kind in ("Function", "Test")
+            and node.parent_name.rsplit(".", 1)[-1] in disambiguated_leaves
         }
 
         def candidate_entries(
