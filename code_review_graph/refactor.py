@@ -19,6 +19,7 @@ from typing import Any, Optional, Union
 
 from .flows import _has_framework_decorator, _matches_entry_name
 from .graph import GraphStore, _compatible_edge_languages, _sanitize_name
+from .parser import _STORYBOOK_FILE_RE
 from .parser import is_test_file as _is_test_file
 from .parser import repo_relative_path as _repo_relative
 
@@ -321,6 +322,8 @@ def find_dead_code(
         "WHERE e.kind IN ('CALLS', 'TESTED_BY', 'IMPORTS_FROM', 'INHERITS', 'REFERENCES')"
     ):
         edge_kind, source, target, file_path, language = row
+        if _STORYBOOK_FILE_RE.search(file_path):
+            continue
         incoming_kinds.setdefault(target, set()).add(edge_kind)
         if edge_kind in ("CALLS", "INHERITS"):
             bare_files_by_language.setdefault((edge_kind, target, language), set()).add(file_path)
