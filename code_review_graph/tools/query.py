@@ -261,6 +261,9 @@ def get_impact_radius(
         abs_files, unmatched_files = _resolve_graph_file_paths_with_unmatched(
             store, root, changed_files,
         )
+        shown_unmatched, unmatched_total, unmatched_cut = _bounded(
+            unmatched_files, 5 if detail_level == "minimal" else max_results, _MAX_IMPACT_FILES,
+        )
         result = store.get_impact_radius(
             abs_files, max_depth=max_depth, max_nodes=max_results,
             resolution=resolution,
@@ -385,10 +388,12 @@ def get_impact_radius(
                 "status": "ok",
                 "summary": "\n".join(summary_parts),
                 "risk": risk,
-                "unmatched_files": unmatched_files,
+                "unmatched_files": shown_unmatched,
+                "unmatched_files_total": unmatched_total,
+                "unmatched_files_truncated": unmatched_cut,
                 "impacted_file_count": len(result["impacted_files"]),
                 "key_entities": key_entities,
-                "truncated": truncated,
+                "truncated": truncated or unmatched_cut,
                 "nodes_omitted": max(0, total_impacted - len(impacted_dicts)),
                 # One integer, and the only thing in this response that says
                 # the radius has a blind spot at all.
@@ -402,7 +407,9 @@ def get_impact_radius(
         response: dict[str, Any] = {
             "status": "ok",
             "risk": risk,
-            "unmatched_files": unmatched_files,
+            "unmatched_files": shown_unmatched,
+            "unmatched_files_total": unmatched_total,
+            "unmatched_files_truncated": unmatched_cut,
             "summary": "\n".join(summary_parts),
             "changed_files": changed_files,
             "changed_nodes": changed_dicts,
@@ -412,7 +419,7 @@ def get_impact_radius(
             "impacted_files_omitted": files_omitted,
             "edges": edge_dicts,
             "edges_omitted": edges_omitted,
-            "truncated": truncated,
+            "truncated": truncated or unmatched_cut,
             "total_impacted": total_impacted,
             "nodes_omitted": max(0, total_impacted - len(impacted_dicts)),
             "resolution": resolution,

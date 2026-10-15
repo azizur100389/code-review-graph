@@ -494,6 +494,9 @@ def get_review_context(
         graph_files, unmatched_files = _resolve_graph_file_paths_with_unmatched(
             store, root, changed_files,
         )
+        shown_unmatched, unmatched_total, unmatched_cut = _bounded(
+            unmatched_files, 5 if detail_level == "minimal" else max_files, _MAX_REVIEW_FILES,
+        )
         original_tokens = estimate_file_tokens(root, changed_files)
         impact = store.get_impact_radius(graph_files, max_depth=max_depth)
         impacted_count = impact.get("total_impacted", len(impact["impacted_nodes"]))
@@ -544,7 +547,9 @@ def get_review_context(
                 "status": "ok",
                 "summary": "\n".join(summary_parts),
                 "risk": risk,
-                "unmatched_files": unmatched_files,
+                "unmatched_files": shown_unmatched,
+                "unmatched_files_total": unmatched_total,
+                "unmatched_files_truncated": unmatched_cut,
                 "changed_file_count": len(changed_files),
                 "impacted_file_count": len(impact["impacted_files"]),
                 "key_entities": key_entities,
@@ -589,7 +594,7 @@ def get_review_context(
             impact["edges"], max_results, _MAX_REVIEW_EDGES,
         )
         truncated = (
-            files_cut or impacted_cut or cn_cut or in_cut or edges_cut
+            files_cut or impacted_cut or cn_cut or in_cut or edges_cut or unmatched_cut
         )
 
         context: dict[str, Any] = {
@@ -717,7 +722,9 @@ def get_review_context(
         result = {
             "status": "ok",
             "risk": risk,
-            "unmatched_files": unmatched_files,
+            "unmatched_files": shown_unmatched,
+            "unmatched_files_total": unmatched_total,
+            "unmatched_files_truncated": unmatched_cut,
             "summary": "\n".join(summary_parts),
             "context": context,
         }
